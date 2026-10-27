@@ -77,6 +77,8 @@ researcher = Agent(
     ),
     llm=llm,
     tools=[tavily_web_search],
+    max_iter=4,
+    max_retry_limit=1,
     verbose=True,
     allow_delegation=False,
 )
@@ -92,6 +94,33 @@ analyst = Agent(
         "You are an analytical thinker who identifies "
         "patterns, compares ideas, and distinguishes "
         "established facts from speculation."
+    ),
+    llm=llm,
+    verbose=True,
+    allow_delegation=False,
+)
+
+
+# --------------------------------------------------
+# 4. Create the Source Verification Agent
+# --------------------------------------------------
+
+verifier = Agent(
+    role="Source Verification Specialist",
+    goal=(
+        "Evaluate the credibility, relevance, and evidence "
+        "quality of sources collected during research"
+    ),
+    backstory=(
+        "You are a careful research verification specialist. "
+        "You examine source titles, URLs, and available summaries. "
+        "You distinguish peer-reviewed research, official "
+        "documentation, reputable reporting, and opinion pieces "
+        "from marketing material, job listings, and unsupported "
+        "claims. You identify duplicate sources and limitations. "
+        "You never claim to have opened a URL, checked a fact, "
+        "or verified a claim unless the available evidence "
+        "actually supports that statement."
     ),
     llm=llm,
     verbose=True,
@@ -139,24 +168,66 @@ research_task = Task(
     agent=researcher,
 )
 
+
+# --------------------------------------------------
+# 6. Define the source verification task
+# --------------------------------------------------
+
+verification_task = Task(
+    description=(
+        "Evaluate the research findings about {topic} produced "
+        "by the research task. Examine each source's title, URL, "
+        "and available summary. For every source, report:\n"
+        "1. Source title and URL.\n"
+        "2. Source category: academic research, official "
+        "documentation, reputable reporting, opinion, marketing, "
+        "job listing, or other.\n"
+        "3. Relevance to the research topic.\n"
+        "4. What evidence the available summary actually provides.\n"
+        "5. Potential bias, limitations, or unsupported claims.\n"
+        "6. Whether the source appears duplicated.\n\n"
+        "Assign a qualitative evidence assessment: stronger, "
+        "limited, or weak, and explain the reason. Do not treat "
+        "a source as reliable solely because it appears in search "
+        "results. Do not claim to have opened URLs, checked "
+        "publication details, or independently verified facts "
+        "when you have not done so. If information is insufficient, "
+        "explicitly say 'Unable to determine from the available "
+        "information.'\n\n"
+        "Finish with a concise assessment of the overall source "
+        "quality and identify claims that require further checking."
+    ),
+    expected_output=(
+        "A source-by-source verification report listing each "
+        "source's title, URL, category, relevance, available "
+        "evidence, limitations, possible duplication, and "
+        "qualitative evidence assessment, followed by an overall "
+        "source-quality summary."
+    ),
+    agent=verifier,
+    context=[research_task],
+)
+
 # --------------------------------------------------
 # 6. Define the analysis task
 # --------------------------------------------------
 
 analysis_task = Task(
     description=(
-        "Analyze the research findings about {topic}. "
-        "Identify the most important insights, practical "
-        "implications, limitations, and unanswered questions. "
-        "Use the research task's output as your main evidence. "
-        "Do not introduce unsupported facts."
+        "Analyze the research findings about {topic}, using both "
+        "the original research task and the source verification "
+        "report. Prioritize claims supported by stronger evidence. "
+        "Identify important insights, practical implications, "
+        "limitations, conflicting evidence, and unanswered questions. "
+        "Clearly distinguish supported findings from weak evidence "
+        "and assumptions. Do not introduce unsupported facts."
     ),
     expected_output=(
         "An analytical summary containing key insights, "
         "practical implications, limitations, and open questions."
     ),
     agent=analyst,
-    context=[research_task],
+    context=[research_task, verification_task],
 )
 
 # --------------------------------------------------
@@ -176,7 +247,7 @@ writing_task = Task(
         "clear headings and a balanced conclusion."
     ),
     agent=writer,
-    context=[research_task, analysis_task],
+    context=[research_task, verification_task, analysis_task],
 )
 
 # --------------------------------------------------
@@ -184,8 +255,13 @@ writing_task = Task(
 # --------------------------------------------------
 
 research_crew = Crew(
-    agents=[researcher, analyst, writer],
-    tasks=[research_task, analysis_task, writing_task],
+    agents=[researcher, verifier, analyst, writer],
+    tasks=[
+        research_task,
+        verification_task,
+        analysis_task,
+        writing_task,
+    ],
     process=Process.sequential,
     verbose=True,
 )
