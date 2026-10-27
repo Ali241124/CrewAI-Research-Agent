@@ -1,5 +1,11 @@
+import os
 
+from dotenv import load_dotenv
+from tavily import TavilyClient
 from crewai import Agent, Task, Crew, LLM, Process
+from crewai.tools import tool
+
+load_dotenv()
 
 # --------------------------------------------------
 # 1. Configure our local language model
@@ -11,19 +17,64 @@ llm = LLM(
     temperature=0.3,
 )
 
+
+@tool("Tavily Web Search")
+def tavily_web_search(query: str) -> str:
+    """Search the live web for relevant information.
+    Return source titles, URLs, and text summaries
+    that can be used to research a topic.
+    """
+    api_key = os.getenv("TAVILY_API_KEY")
+
+    if not api_key:
+        return (
+            "Search unavailable: TAVILY_API_KEY is missing "
+            "from the .env file."
+        )
+
+    client = TavilyClient(api_key=api_key)
+
+    response = client.search(
+        query=query,
+        max_results=5,
+        search_depth="basic",
+    )
+
+    results = response.get("results", [])
+
+    if not results:
+        return "No search results were returned."
+
+    formatted_results = []
+
+    for index, result in enumerate(results, start=1):
+        title = result.get("title", "Untitled")
+        url = result.get("url", "No URL")
+        content = result.get("content", "No summary available")
+
+        formatted_results.append(
+            f"Source {index}: {title}\n"
+            f"URL: {url}\n"
+            f"Summary: {content[:1500]}"
+        )
+
+    return "\n\n".join(formatted_results)
+
 # --------------------------------------------------
 # 2. Create the Research Agent
 # --------------------------------------------------
 
 researcher = Agent(
     role="AI Researcher",
-    goal="Explore a topic and identify important information",
+    goal="Research topics using current web sources",
     backstory=(
         "You are a careful AI researcher. "
-        "You organize information into clear findings, "
-        "identify uncertainties, and never invent sources."
+        "You use web search to find relevant information, "
+        "record source URLs, and distinguish evidence "
+        "from assumptions. Never invent references."
     ),
     llm=llm,
+    tools=[tavily_web_search],
     verbose=True,
     allow_delegation=False,
 )
@@ -69,11 +120,14 @@ writer = Agent(
 research_task = Task(
     description=(
         "Research the topic: {topic}. "
-        "Explain its definition, major concepts, practical "
+        "Use the Tavily Web Search tool to find relevant "
+        "and reasonably recent online sources. "
+        "Search for the definition, major concepts, practical "
         "applications, benefits, limitations, and open questions. "
-        "Use your existing knowledge and clearly identify "
-        "claims that require external verification. "
-        "Do not fabricate references."
+        "Include source titles and URLs in your findings. "
+        "Distinguish source-supported claims from assumptions. "
+        "Do not fabricate sources or claim that a source "
+        "supports something you have not verified."
     ),
     expected_output=(
         "A structured collection of research findings covering "
