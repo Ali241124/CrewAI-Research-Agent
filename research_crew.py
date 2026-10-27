@@ -1,5 +1,7 @@
 import os
-
+from pathlib import Path
+from datetime import datetime
+import re
 from dotenv import load_dotenv
 from tavily import TavilyClient
 from crewai import Agent, Task, Crew, LLM, Process
@@ -198,11 +200,31 @@ if __name__ == "__main__":
     if not topic:
         print("Please enter a research topic.")
     else:
-        result = research_crew.kickoff(
-            inputs={"topic": topic}
-        )
+        # Run the research crew
+        result = research_crew.kickoff(inputs={"topic": topic})
 
+        # Display the final report
         print("\n" + "=" * 60)
         print("FINAL RESEARCH REPORT")
         print("=" * 60)
-        print(result)
+
+        report = result.raw if hasattr(result, "raw") else str(result)
+        print(report)
+
+        # Create the reports folder if it does not exist
+        reports_dir = Path("reports")
+        reports_dir.mkdir(exist_ok=True)
+
+        # Make a safe filename from the research topic
+        safe_topic = re.sub(r'[<>:"/\\|?*]', "", topic)
+        safe_topic = re.sub(r"\s+", "_", safe_topic.strip())
+        safe_topic = safe_topic[:70] or "research_report"
+
+        # Add a timestamp to prevent overwriting earlier reports
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        report_path = reports_dir / f"{safe_topic}_{timestamp}.md"
+
+        # Save the report as a Markdown file
+        report_path.write_text(report, encoding="utf-8")
+
+        print(f"\nReport saved successfully to: {report_path.resolve()}")
