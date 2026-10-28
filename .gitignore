@@ -16,6 +16,7 @@ __pycache__/
 # Test and coverage files
 .pytest_cache/
 .coverage
+.streamlit/secrets.toml
 htmlcov/
 
 # Editor and operating system files
