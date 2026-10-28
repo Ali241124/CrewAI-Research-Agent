@@ -1,9 +1,14 @@
 import threading
 from pathlib import Path
 from datetime import datetime
-
+from database import (
+    add_research_run,
+    get_recent_runs,
+    search_research_runs,
+    delete_research_run,
+)
 import streamlit as st
-from research_crew import research_crew
+from research_crew import run_research
 
 @st.cache_resource
 def get_research_lock():
@@ -77,13 +82,76 @@ if "research_topic" not in st.session_state:
 
 
 # -----------------------------
-# Sidebar: Previous reports
+# Sidebar: Research History and Previous Reports
 # -----------------------------
 with st.sidebar:
     st.title("🔎 Research Agent")
     st.caption("AI-powered web research")
     st.divider()
 
+    st.subheader("Research History")
+
+    history_query = st.text_input(
+        "Search past topics",
+        placeholder="e.g. healthcare, RAG, agents",
+        key="history_search",
+    )
+
+    history_runs = search_research_runs(
+        query=history_query,
+        limit=20,
+    )
+
+    if not history_runs:
+        st.info("Your completed research runs will appear here.")
+
+    else:
+        for run in history_runs:
+            date_label = run["created_at"][:10]
+
+            with st.expander(
+                f"#{run['id']} · {run['topic'][:35]} · {date_label}"
+            ):
+                st.caption(f"Sources: {run['sources_count']}")
+
+                if run["validation_issues"]:
+                    st.warning(
+                        f"{len(run['validation_issues'])} "
+                        "citation validation warning(s)"
+                    )
+                else:
+                    st.caption(
+                        "No citation validation warnings recorded."
+                    )
+
+                saved_path = Path(run["report_path"])
+
+                if saved_path.is_file():
+                    if st.button(
+                        "Open saved report",
+                        key=f"open_history_{run['id']}",
+                        use_container_width=True,
+                    ):
+                        st.session_state.research_result = (
+                            saved_path.read_text(encoding="utf-8")
+                        )
+                        st.session_state.research_topic = run["topic"]
+                        st.rerun()
+                else:
+                    st.caption("Report file not found.")
+
+                if st.button(
+                    "Delete history entry",
+                    key=f"delete_history_{run['id']}",
+                    use_container_width=True,
+                ):
+                    deleted = delete_research_run(run["id"])
+
+                    if deleted:
+                        st.toast("History entry deleted.")
+                    st.rerun()
+
+    st.divider()
     st.subheader("Previous Reports")
 
     report_files = sorted(
@@ -96,7 +164,9 @@ with st.sidebar:
         st.info("No saved reports yet.")
     else:
         for report_file in report_files:
-            with st.expander(report_file.stem.replace("_", " ")):
+            with st.expander(
+                report_file.stem.replace("_", " ")
+            ):
                 st.caption(
                     f"Modified: "
                     f"{datetime.fromtimestamp(report_file.stat().st_mtime):%d %b %Y, %I:%M %p}"
@@ -112,7 +182,6 @@ with st.sidebar:
                     )
                     st.session_state.research_topic = report_file.stem
                     st.rerun()
-
 
 # -----------------------------
 # Main page
@@ -173,36 +242,28 @@ if submitted:
                 st.write("Researching the topic and evaluating sources...")
                 st.write("Analyzing findings and preparing the report...")
 
-                result = research_crew.kickoff(
-                    inputs={"topic": topic}
-                )
+                result = run_research(topic)
 
-                report_text = str(result)
+            report_text = result["report"]
+            report_path = Path(result["report_path"])
 
-                safe_topic = "".join(
-                    char if char.isalnum() else "_"
-                    for char in topic
-                ).strip("_")[:60]
+            run_id = add_research_run(
+                topic=topic,
+                report_path=str(report_path),
+                sources_count=len(result.get("sources", [])),
+                validation_issues=result.get("validation_issues", []),
+            )
 
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            st.session_state.research_result = report_text
+            st.session_state.research_topic = topic
 
-                report_path = (
-                    REPORTS_DIR
-                    / f"{safe_topic}_{timestamp}_ui.md"
-                )
+            st.success(f"Research saved to history. Run ID: {run_id}")
 
-                report_path.write_text(
-                    report_text,
-                    encoding="utf-8",
-                )
-
-                st.session_state.research_result = report_text
-
-                status.update(
-                    label="Research completed successfully!",
-                    state="complete",
-                    expanded=False,
-                )
+            status.update(
+                label="Research completed successfully!",
+                state="complete",
+                expanded=False,
+            )
 
             st.success(f"Report saved: {report_path.name}")
 

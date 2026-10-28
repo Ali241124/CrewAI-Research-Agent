@@ -446,13 +446,207 @@ def validate_report_citations(
     return issues
 
 # --------------------------------------------------
-# 6. Run research and save the report
+# 6. Reusable research pipeline
 # --------------------------------------------------
+
+def run_research(topic: str) -> dict:
+    """Search, write, verify, validate, and save a research report."""
+
+    topic = topic.strip()
+
+    if not topic:
+        raise ValueError("Research topic cannot be empty.")
+
+    print("\nSearching the web with Tavily...")
+    sources = search_web(topic)
+
+    print(f"Retrieved {len(sources)} source(s).")
+
+    for source in sources:
+        print(f"- [{source['label']}] {source['title']}")
+        print(f"  {source['url']}")
+
+    source_material = format_sources(sources)
+
+    # Stage 1: Generate the initial report.
+    print("\nGenerating the initial report with local Ollama...")
+
+    draft_result = Crew(
+        agents=[writer],
+        tasks=[report_task],
+        process=Process.sequential,
+        verbose=True,
+    ).kickoff(
+        inputs={
+            "topic": topic,
+            "source_material": source_material,
+        }
+    )
+
+    draft_report = (
+        draft_result.raw
+        if hasattr(draft_result, "raw")
+        else str(draft_result)
+    )
+
+    # Stage 2: Verify the draft against the original evidence.
+    print("\nVerifying the report against the source evidence...")
+
+    verified_result = Crew(
+        agents=[verifier],
+        tasks=[verification_task],
+        process=Process.sequential,
+        verbose=True,
+    ).kickoff(
+        inputs={
+            "topic": topic,
+            "source_material": source_material,
+            "draft_report": draft_report,
+        }
+    )
+
+    report = (
+        verified_result.raw
+        if hasattr(verified_result, "raw")
+        else str(verified_result)
+    )
+
+    # Validate citations and source URLs.
+    issues = validate_report_citations(report, sources)
+
+    if issues:
+        print("\nCITATION VALIDATION WARNINGS:")
+        for issue in issues:
+            print(f"- {issue}")
+    else:
+        print("\nCitation labels and URLs passed basic validation.")
+
+    # Save the final report.
+    reports_dir = Path(__file__).resolve().parent / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_topic = re.sub(r'[<>:"/\\|?*]', "", topic)
+    safe_topic = re.sub(r"\s+", "_", safe_topic.strip())
+    safe_topic = safe_topic[:70] or "research_report"
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_path = reports_dir / f"{safe_topic}_{timestamp}.md"
+
+    report_path.write_text(report, encoding="utf-8")
+
+    print(f"\nReport saved to: {report_path.resolve()}")
+
+    return {
+        "topic": topic,
+        "report": report,
+        "draft_report": draft_report,
+        "sources": sources,
+        "validation_issues": issues,
+        "report_path": str(report_path.resolve()),
+    }
 
 
 # --------------------------------------------------
-# 6. Run research, verify, validate, and save
+# 7. Terminal entry point
 # --------------------------------------------------
+
+
+def run_research(topic: str) -> dict:
+    """Run the research pipeline and return the report and its metadata."""
+
+    topic = topic.strip()
+
+    if not topic:
+        raise ValueError("Research topic cannot be empty.")
+
+    print("\nSearching the web with Tavily...")
+    sources = search_web(topic)
+
+    print(f"Retrieved {len(sources)} source(s).")
+
+    for source in sources:
+        print(f"- [{source['label']}] {source['title']}")
+        print(f"  {source['url']}")
+
+    source_material = format_sources(sources)
+
+    # Stage 1: Generate the initial report.
+    print("\nGenerating the initial report with local Ollama...")
+
+    draft_result = Crew(
+        agents=[writer],
+        tasks=[report_task],
+        process=Process.sequential,
+        verbose=True,
+    ).kickoff(
+        inputs={
+            "topic": topic,
+            "source_material": source_material,
+        }
+    )
+
+    draft_report = (
+        draft_result.raw
+        if hasattr(draft_result, "raw")
+        else str(draft_result)
+    )
+
+    # Stage 2: Verify the report against the original evidence.
+    print("\nVerifying the report against the source evidence...")
+
+    verified_result = Crew(
+        agents=[verifier],
+        tasks=[verification_task],
+        process=Process.sequential,
+        verbose=True,
+    ).kickoff(
+        inputs={
+            "topic": topic,
+            "source_material": source_material,
+            "draft_report": draft_report,
+        }
+    )
+
+    report = (
+        verified_result.raw
+        if hasattr(verified_result, "raw")
+        else str(verified_result)
+    )
+
+    # Validate citation labels and URLs.
+    issues = validate_report_citations(report, sources)
+
+    if issues:
+        print("\nCITATION VALIDATION WARNINGS:")
+        for issue in issues:
+            print(f"- {issue}")
+    else:
+        print("\nCitation labels and URLs passed basic validation.")
+
+    # Save the final report.
+    reports_dir = Path(__file__).resolve().parent / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_topic = re.sub(r'[<>:"/\\|?*]', "", topic)
+    safe_topic = re.sub(r"\s+", "_", safe_topic.strip())
+    safe_topic = safe_topic[:70] or "research_report"
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_path = reports_dir / f"{safe_topic}_{timestamp}.md"
+
+    report_path.write_text(report, encoding="utf-8")
+
+    print(f"\nReport saved to: {report_path.resolve()}")
+
+    return {
+        "topic": topic,
+        "report": report,
+        "draft_report": draft_report,
+        "sources": sources,
+        "validation_issues": issues,
+        "report_path": str(report_path.resolve()),
+    }
+
 
 if __name__ == "__main__":
     topic = input("Enter a research topic: ").strip()
@@ -462,92 +656,11 @@ if __name__ == "__main__":
         raise SystemExit(1)
 
     try:
-        # Search for source material.
-        print("\nSearching the web with Tavily...")
-        sources = search_web(topic)
-
-        print(f"Retrieved {len(sources)} source(s).")
-
-        for source in sources:
-            print(f"- [{source['label']}] {source['title']}")
-            print(f"  {source['url']}")
-
-        source_material = format_sources(sources)
-
-        # Stage 1: Generate the initial report.
-        print("\nGenerating the initial report with local Ollama...")
-
-        draft_result = Crew(
-            agents=[writer],
-            tasks=[report_task],
-            process=Process.sequential,
-            verbose=True,
-        ).kickoff(
-            inputs={
-                "topic": topic,
-                "source_material": source_material,
-            }
-        )
-
-        draft_report = (
-            draft_result.raw
-            if hasattr(draft_result, "raw")
-            else str(draft_result)
-        )
-
-        # Stage 2: Verify the report against the original evidence.
-        print("\nVerifying the report against the source evidence...")
-
-        verified_result = Crew(
-            agents=[verifier],
-            tasks=[verification_task],
-            process=Process.sequential,
-            verbose=True,
-        ).kickoff(
-            inputs={
-                "topic": topic,
-                "source_material": source_material,
-                "draft_report": draft_report,
-            }
-        )
-
-        report = (
-            verified_result.raw
-            if hasattr(verified_result, "raw")
-            else str(verified_result)
-        )
-
-        # Display the final report.
+        result = run_research(topic)
         print("\n" + "=" * 60)
         print("FINAL RESEARCH REPORT")
         print("=" * 60)
-        print(report)
-
-        # Create the reports directory and a safe filename.
-        reports_dir = Path("reports")
-        reports_dir.mkdir(parents=True, exist_ok=True)
-
-        safe_topic = re.sub(r'[<>:"/\\|?*]', "", topic)
-        safe_topic = re.sub(r"\s+", "_", safe_topic.strip())
-        safe_topic = safe_topic[:70] or "research_report"
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        report_path = reports_dir / f"{safe_topic}_{timestamp}.md"
-
-        # Run basic citation and URL validation.
-        issues = validate_report_citations(report, sources)
-
-        if issues:
-            print("\nCITATION VALIDATION WARNINGS:")
-            for issue in issues:
-                print(f"- {issue}")
-        else:
-            print("\nCitation labels and URLs passed basic validation.")
-
-        # Save the final verified report.
-        report_path.write_text(report, encoding="utf-8")
-
-        print(f"\nReport saved to: {report_path.resolve()}")
+        print(result["report"])
 
     except Exception as error:
         print(f"\nResearch failed: {type(error).__name__}: {error}")
