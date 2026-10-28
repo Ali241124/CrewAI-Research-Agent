@@ -3,7 +3,7 @@ import os
 import re
 from pathlib import Path
 from datetime import datetime
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urldefrag
 
 from dotenv import load_dotenv
 from tavily import TavilyClient
@@ -23,12 +23,68 @@ llm = LLM(
     max_retries=1,
 )
 
+
+def classify_source(source: dict) -> dict:
+    """Classify a source for review; this is not proof of credibility."""
+
+    domain = (source.get("domain") or "").lower()
+    title = (source.get("title") or "").lower()
+    summary = (source.get("summary") or "").strip()
+
+    academic_domains = (
+        "pubmed.ncbi.nlm.nih.gov",
+        "jmir.org",
+        "nature.com",
+        "sciencedirect.com",
+        "springer.com",
+        "wiley.com",
+        "ieee.org",
+        "acm.org",
+        "mdpi.com",
+        "plos.org",
+        "arxiv.org",
+    )
+
+    aggregator_domains = (
+        "paperguide.ai",
+        "researchgate.net",
+        "medium.com",
+    )
+
+    if any(
+        domain == trusted or domain.endswith("." + trusted)
+        for trusted in academic_domains
+    ):
+        source_type = "Academic publisher/repository"
+        review_status = "Candidate for verification"
+    elif any(
+        domain == site or domain.endswith("." + site)
+        for site in aggregator_domains
+    ):
+        source_type = "Aggregator/community platform"
+        review_status = "Review original source"
+    elif ".edu" in domain or domain.endswith(".gov"):
+        source_type = "Educational/government domain"
+        review_status = "Candidate for verification"
+    else:
+        source_type = "Other website"
+        review_status = "Needs review"
+
+    if len(summary) < 100:
+        review_status = "Insufficient evidence excerpt"
+
+    source["source_type"] = source_type
+    source["review_status"] = review_status
+    source["evidence_length"] = len(summary)
+
+    return source
+
 # --------------------------------------------------
 # 2. Search the web directly using Tavily
 # --------------------------------------------------
 
 def search_web(topic: str) -> list[dict]:
-    """Search once and return source metadata and summaries."""
+    """Search Tavily and return filtered, deduplicated sources."""
 
     api_key = os.getenv("TAVILY_API_KEY")
 
@@ -40,42 +96,96 @@ def search_web(topic: str) -> list[dict]:
     client = TavilyClient(api_key=api_key)
 
     response = client.search(
-        query=f"{topic} official documentation research papers reputable sources",
-        max_results=3,
+        query=(
+            f"{topic} official documentation research papers "
+            "reputable sources"
+        ),
+        max_results=5,
         search_depth="basic",
     )
 
     results = response.get("results", [])
     sources = []
+    seen_urls = set()
 
-    for index, item in enumerate(results, start=1):
-        url = item.get("url") or ""
+    for item in results:
+        url = (item.get("url") or "").strip()
+        title = (item.get("title") or "").strip()
+        summary = (item.get("content") or "").strip()
+
+        # Ignore incomplete search results.
+        if not url or not title or not summary:
+            continue
+
+        # Only accept HTTP/HTTPS URLs with a valid hostname.
         parsed_url = urlparse(url)
 
+        if (
+            parsed_url.scheme not in ("http", "https")
+            or not parsed_url.hostname
+        ):
+            continue
+
+        # Remove URL fragments and normalize the hostname.
+        clean_url = urldefrag(url).url
+        parsed_url = urlparse(clean_url)
+        normalized_host = (parsed_url.hostname or "").lower()
+
+        # Remove common tracking parameters for duplicate detection.
+        normalized_path = parsed_url.path.rstrip("/") or "/"
+        normalized_query = parsed_url.query
+
+        tracking_markers = (
+            "utm_", "gclid", "fbclid", "mc_cid", "mc_eid"
+        )
+
+        if normalized_query:
+            kept_params = []
+
+            for parameter in normalized_query.split("&"):
+                key = parameter.split("=", 1)[0].lower()
+
+                if not key.startswith(tracking_markers):
+                    kept_params.append(parameter)
+
+            normalized_query = "&".join(kept_params)
+
+        dedupe_key = (
+            normalized_host,
+            normalized_path,
+            normalized_query,
+        )
+
+        if dedupe_key in seen_urls:
+            continue
+
+        seen_urls.add(dedupe_key)
+
         sources.append({
-            "label": f"S{index}",
-            "title": item.get("title") or "Untitled",
-            "url": url,
-            "domain": parsed_url.netloc,
+            "title": title,
+            "url": clean_url,
+            "domain": normalized_host,
             "score": item.get("score"),
             "published_date": (
                 item.get("published_date") or "Not provided"
             ),
-            "summary": (
-                item.get("content") or "No summary available"
-            )[:400],
+            "summary": summary[:700],
         })
 
-    return sources
+    # Assign labels only after filtering and deduplication.
+    for index, source in enumerate(sources, start=1):
+        source["label"] = f"S{index}"
+        classify_source(source)
 
+    return sources 
 
 def format_sources(sources: list[dict]) -> str:
-    """Format the search results for the report-writing agent."""
+    """Format source evidence for the report-writing agent."""
 
     if not sources:
         return (
-            "NO SOURCES WERE FOUND. State this limitation clearly "
-            "and do not invent sources or research findings."
+            "NO USABLE SOURCES WERE FOUND. State this limitation "
+            "clearly. Do not invent sources or research findings."
         )
 
     formatted = []
@@ -86,12 +196,15 @@ def format_sources(sources: list[dict]) -> str:
             f"Title: {source['title']}\n"
             f"URL: {source['url']}\n"
             f"Domain: {source['domain']}\n"
+            f"Source type: {source['source_type']}\n"
+            f"Review status: {source['review_status']}\n"
             f"Published date: {source['published_date']}\n"
             f"Search relevance score: {source['score']}\n"
-            f"Search-result summary: {source['summary']}"
+            f"Evidence excerpt: {source['summary']}"
         )
 
     return "\n\n".join(formatted)
+
 
 
 # --------------------------------------------------
@@ -130,6 +243,19 @@ report_task = Task(
 
     SOURCE MATERIAL:
     {source_material}
+    
+    SOURCE QUALITY AND EVIDENCE RULES
+
+    1. Use the supplied source material as the evidence base for the report.
+    2. Treat "Candidate for verification" as an unverified candidate, not a confirmed trustworthy source.
+    3. Treat "Review original source" and "Needs review" as lower-confidence material. Prefer stronger sources when their evidence supports the claim.
+    4. Do not claim that a source is peer-reviewed, authoritative, or independently verified based only on its domain classification.
+    5. Cite factual claims using the supplied source labels, such as [S1] or [S4].
+    6. Only make claims supported by the relevant source excerpt. Do not infer a paper's findings from its title.
+    7. If the available excerpts do not support a requested detail, explicitly state that the evidence is insufficient.
+    8. Preserve the exact source URLs supplied in the evidence. Never invent references.
+    9. Distinguish findings reported by a source from your own interpretation.
+    10. End the report with a References section listing only sources actually cited, using their exact titles and URLs.
 
     Rules:
     - Write approximately 250–350 words.
