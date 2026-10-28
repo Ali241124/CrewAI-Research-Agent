@@ -16,9 +16,9 @@ load_dotenv()
 # --------------------------------------------------
 
 llm = LLM(
-    model="ollama/qwen2.5:7b",
+    model="ollama/llama3.2:3b",
     base_url="http://localhost:11434",
-    temperature=0.2,
+    temperature=0.1,
     timeout=300,
     max_retries=1,
 )
